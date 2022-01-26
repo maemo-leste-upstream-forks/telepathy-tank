@@ -1,0 +1,31 @@
+This package was debianized by Sjoerd Simons <sjoerd@debian.org> based on work
+by Cesare Tirabassi <cesare.tirabassi@gmail.com> on
+Fri, 18 May 2007 17:04:13 +0200.
+
+It was downloaded from <http://sourceforge.net/project/showfiles.php?group_id=191149>
+
+Upstream Authors:       Mikhail Zabaluev        <first.surname@nokia.com>
+                        Kai Vehmanen            <first.surname@nokia.com>
+                        Martti Mela             <first.surname@nokia.com>
+                        Simon McVittie          <simon.mcvittie@collabora.co.uk>
+                        Rob Taylor              <rob.taylor@collabora.co.uk>
+
+Copyright (C) 2005-2007 Collabora Ltd.
+Copyright (C) 2005-2007 Nokia Corporation
+
+    This package is free software; you can redistribute it and/or
+    modify it under the terms of the GNU Lesser General Public
+    License as published by the Free Software Foundation; either
+    version 2.1 of the License, or (at your option) any later version.
+
+    This package is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+    Lesser General Public License for more details.
+
+    You should have received a copy of the GNU Lesser General Public
+    License along with this package; if not, write to the Free Software
+    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
+
+On Debian systems, the complete text of the GNU Lesser General
+Public License can be found in `/usr/share/common-licenses/LGPL'.

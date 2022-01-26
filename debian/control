@@ -1,0 +1,27 @@
+Source: telepathy-tank
+Section: net
+Priority: optional
+Maintainer: Merlijn Wajer <merlijn@wizzup.org>
+Uploaders: Merlijn Wajer <merlijn@wizzup.org>
+Build-Depends: debhelper-compat (= 10),
+               libquotient-dev,
+               libtelepathy-qt5-dev,
+               qtbase5-dev,
+               qt5-default,
+               cmake,
+               libqt5svg5-dev,
+               qtmultimedia5-dev,
+               libqt5x11extras5-dev,
+Standards-Version: 4.5.1
+Vcs-Git: https://github.com/maemo-leste-upstream-forks/telepathy-tank.git
+Vcs-Browser: https://github.com/maemo-leste-upstream-forks/telepathy-tank
+Homepage: http://telepathy.freedesktop.org/
+
+Package: telepathy-tank
+Architecture: any
+Depends: ${shlibs:Depends},
+         ${misc:Depends}
+Provides: telepathy-connection-manager
+Description: Matrix connection manager for the Telepathy framework
+ telepathy-tank is a Matrix connection manager for the Telepathy framework
+ (http://telepathy.freedesktop.org) based on the libQuotient library
