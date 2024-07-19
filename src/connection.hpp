@@ -25,6 +25,7 @@
 #include <TelepathyQt/RequestableChannelClassSpecList>
 
 #include <QHash>
+#include <QDir>
 
 #include "messageschannel.hpp" // MatrixMessagesChannelPtr typedef
 
@@ -43,6 +44,8 @@ class PostReceiptJob;
 class ForgetRoomJob;
 class MediaThumbnailJob;
 class JoinRoomJob;
+class LeaveRoomJob;
+class CreateRoomJob;
 class UploadContentJob;
 class GetContentJob;
 class DownloadFileJob;
@@ -94,6 +97,7 @@ public:
     Tp::UIntList requestHandles(uint handleType, const QStringList &identifiers, Tp::DBusError *error);
 
     Tp::BaseChannelPtr createChannelCB(const QVariantMap &request, Tp::DBusError *error);
+    Tp::BaseChannelPtr bogusChannel(Tp::BaseChannelPtr baseChannel, Tp::DBusError *error, QString err_msg);
 
     Tp::ContactAttributesMap getContactListAttributes(const QStringList &interfaces, bool hold, Tp::DBusError *error);
     Tp::ContactAttributesMap getContactAttributes(const Tp::UIntList &handles, const QStringList &interfaces, Tp::DBusError *error);
@@ -110,10 +114,18 @@ public:
     Tp::SimplePresence getPresence(uint handle);
     uint setPresence(const QString &status, const QString &message, Tp::DBusError *error);
 
+    Quotient::JoinRoomJob *joinRoomSync(QString alias);
+    Quotient::LeaveRoomJob *leaveRoomSync(Quotient::Room *room);
+    Quotient::CreateRoomJob *createRoomSync(QString alias);
+    bool requestLeave(Quotient::Room *room);
+
     Quotient::Connection *matrix() const { return m_connection; }
 
 public slots:
     void onAboutToAddNewMessages(Quotient::RoomEventsRange events);
+    void onChannelLeft(Quotient::Room *room);
+    void onTextChannelClosed();
+    void onRoomNameChanged(Quotient::Room *room);
 
 signals:
     void messageReceived(const QString &sender, const QString &message);
@@ -181,6 +193,9 @@ public:
     QString m_homeServer;
     QString m_deviceId;
 
+private:
+    QMap<QString, QList<RoomMessageEvent*>> m_messageQueue;
+    void handleMatrixMemberEvent(Quotient::Room* room, QJsonObject blob);
 };
 
 #endif // TANK_MATRIX_CONNECTION_HPP

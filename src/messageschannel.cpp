@@ -33,10 +33,11 @@
 #include <csapi/typing.h>
 #include <events/typingevent.h>
 
-MatrixMessagesChannel::MatrixMessagesChannel(MatrixConnection *connection, Quotient::Room *room, Tp::BaseChannel *baseChannel)
+MatrixMessagesChannel::MatrixMessagesChannel(MatrixConnection *connection, QString room_alias, Quotient::Room *room, Tp::BaseChannel *baseChannel)
     : Tp::BaseChannelTextType(baseChannel),
       m_connection(connection),
       m_room(room),
+      m_room_alias(room_alias),
       m_targetHandle(baseChannel->targetHandle()),
       m_targetHandleType(baseChannel->targetHandleType()),
       m_targetId(baseChannel->targetID())
@@ -67,40 +68,64 @@ MatrixMessagesChannel::MatrixMessagesChannel(MatrixConnection *connection, Quoti
     m_chatStateIface->setSetChatStateCallback(Tp::memFun(this, &MatrixMessagesChannel::setChatState));
     baseChannel->plugInterface(Tp::AbstractChannelInterfacePtr::dynamicCast(m_chatStateIface));
 
-    if (m_targetHandleType == Tp::HandleTypeRoom) {
-        Tp::ChannelGroupFlags groupFlags = 0;
-        m_groupIface = Tp::BaseChannelGroupInterface::create();
-        m_groupIface->setGroupFlags(groupFlags);
-        m_groupIface->setSelfHandle(connection->selfHandle());
-        baseChannel->plugInterface(Tp::AbstractChannelInterfacePtr::dynamicCast(m_groupIface));
+    Tp::ChannelGroupFlags groupFlags =
+        Tp::ChannelGroupFlagCanAdd |
+        Tp::ChannelGroupFlagCanRemove |
+        Tp::ChannelGroupFlagMessageDepart;
+    m_groupIface = Tp::BaseChannelGroupInterface::create();
+    m_groupIface->setAddMembersCallback(Tp::memFun(this, &MatrixMessagesChannel::onAddMembers));
+    m_groupIface->setRemoveMembersCallback(Tp::memFun(this, &MatrixMessagesChannel::onRemoveMembers));
+    m_groupIface->setGroupFlags(groupFlags);
+    m_groupIface->setSelfHandle(connection->selfHandle());
+    baseChannel->plugInterface(Tp::AbstractChannelInterfacePtr::dynamicCast(m_groupIface));
 
-        // We have to plug the iface before use set members
-        Tp::UIntList members;
-        members.reserve(m_room->users().count());
-        for (Quotient::User *member : m_room->users()) {
-            members.append(m_connection->ensureHandle(member));
-        }
-        m_groupIface->setMembers(members, {});
-
-
-        m_roomIface = Tp::BaseChannelRoomInterface::create(m_room->displayName(),
-                                                           /* server name */ QString(),
-                                                           /* creator */ QString(),
-                                                           /* creatorHandle */ 0,
-                                                           /* creationTimestamp */ QDateTime());
-        baseChannel->plugInterface(Tp::AbstractChannelInterfacePtr::dynamicCast(m_roomIface));
-        
-        m_roomConfigIface = Tp::BaseChannelRoomConfigInterface::create();
-        baseChannel->plugInterface(Tp::AbstractChannelInterfacePtr::dynamicCast(m_roomConfigIface));
-        m_roomConfigIface->setTitle(room->displayName());
-        m_roomConfigIface->setDescription(room->topic());
+    // We have to plug the iface before use set members
+    Tp::UIntList members;
+    members.reserve(m_room->users().count());
+    for (Quotient::User *member : m_room->users()) {
+        members.append(m_connection->ensureHandle(member));
     }
+    m_groupIface->setMembers(members, {});
+
+    qDebug() << "MessageChannel::create INFO ==========";
+    qDebug() << "m_room->name():" << m_room->name();
+    qDebug() << "m_room->displayName():" << m_room->displayName();
+    qDebug() << "canonicalAlias():" << m_room->canonicalAlias();
+    qDebug() << "using room_alias:" << m_room_alias;
+
+    m_roomIface = Tp::BaseChannelRoomInterface::create(m_room_alias,
+                                                        /* server name */ QString(),
+                                                        /* creator */ QString(),
+                                                        /* creatorHandle */ 0,
+                                                        /* creationTimestamp */ QDateTime());
+    baseChannel->plugInterface(Tp::AbstractChannelInterfacePtr::dynamicCast(m_roomIface));
+
+    m_roomConfigIface = Tp::BaseChannelRoomConfigInterface::create();
+    baseChannel->plugInterface(Tp::AbstractChannelInterfacePtr::dynamicCast(m_roomConfigIface));
+    m_roomConfigIface->setTitle(room->displayName());
+    m_roomConfigIface->setDescription(room->topic());
 
     connect(m_room, &Quotient::Room::pendingEventChanged, this, &MatrixMessagesChannel::onPendingEventChanged);
     connect(m_room, &Quotient::Room::typingChanged, this, &MatrixMessagesChannel::onTypingChanged);
     connect(m_room, &Quotient::Room::readMarkerForUserMoved, this, &MatrixMessagesChannel::onReadMarkerForUserMoved);
     connect(m_room, &Quotient::Room::displaynameChanged, this, &MatrixMessagesChannel::onDisplayNameChanged);
     connect(m_room, &Quotient::Room::topicChanged, this, &MatrixMessagesChannel::onTopicChanged);
+}
+
+void MatrixMessagesChannel::onRemoveMembers(const Tp::UIntList& handles, const QString& message, uint reason, Tp::DBusError* error) {
+    qDebug() << "onRemoveMembers";
+    for(const auto handle: handles) {
+        if(handle == m_connection->selfHandle() && reason == 0) {
+            emit channelLeft(m_room);
+        }
+    }
+}
+
+void MatrixMessagesChannel::onAddMembers(const Tp::UIntList& handles, const QString& message, Tp::DBusError* error) {
+    qDebug() << "onAddMembers";
+    Q_UNUSED(handles)
+    Q_UNUSED(message)
+    Q_UNUSED(error)
 }
 
 void MatrixMessagesChannel::sendDeliveryReport(Tp::DeliveryStatus tpDeliveryStatus, const QString &deliveryToken)
@@ -173,9 +198,9 @@ void MatrixMessagesChannel::sendChatStateNotification(uint state)
              m_connection->matrix()->user()->id(), m_room->id(), (state == Tp::ChannelChatStateComposing));
 }
 
-MatrixMessagesChannelPtr MatrixMessagesChannel::create(MatrixConnection *connection, Quotient::Room *room, Tp::BaseChannel *baseChannel)
+MatrixMessagesChannelPtr MatrixMessagesChannel::create(MatrixConnection *connection, QString room_alias, Quotient::Room *room, Tp::BaseChannel *baseChannel)
 {
-    return MatrixMessagesChannelPtr(new MatrixMessagesChannel(connection, room, baseChannel));
+    return MatrixMessagesChannelPtr(new MatrixMessagesChannel(connection, room_alias, room, baseChannel));
 }
 
 QString MatrixMessagesChannel::sendMessage(const Tp::MessagePartList &messageParts, uint flags, Tp::DBusError *error)
@@ -194,49 +219,64 @@ QString MatrixMessagesChannel::sendMessage(const Tp::MessagePartList &messagePar
     return txnId;
 }
 
+void MatrixMessagesChannel::processMessageEvent(RoomMessageEvent* roomMessageEvent)
+{
+    this->processMessageEvent(
+        roomMessageEvent->id, roomMessageEvent->senderId,
+        roomMessageEvent->isRedacted, roomMessageEvent->redactionReason,
+        roomMessageEvent->originalJsonObject, roomMessageEvent->plainBody,
+        roomMessageEvent->timestamp);
+}
+
 void MatrixMessagesChannel::processMessageEvent(const Quotient::RoomMessageEvent *event)
 {
-    QJsonDocument doc(event->originalJsonObject());
-    qDebug().noquote() << Q_FUNC_INFO << "Process message" << doc.toJson(QJsonDocument::Indented);
+    this->processMessageEvent(
+        event->id(), event->senderId(), event->isRedacted(), event->redactionReason(),
+        event->originalJsonObject(), event->plainBody(),
+        event->originTimestamp().toMSecsSinceEpoch() / 1000);
+}
+
+void MatrixMessagesChannel::processMessageEvent(const QString &id, const QString &senderId, bool isRedacted, const QString &redactionReason, QJsonObject originalJsonObject, const QString &plainBody, double timestamp) 
+{
+    QJsonDocument doc(originalJsonObject);
+    // qDebug().noquote() << Q_FUNC_INFO << "Process message" << doc.toJson(QJsonDocument::Indented);
     bool silent = true;
     Tp::MessagePart header;
-    header[QStringLiteral("message-token")] = QDBusVariant(event->id());
-    header[QStringLiteral("message-sent")] = QDBusVariant(event->timestamp().toMSecsSinceEpoch() / 1000);
-    header[QStringLiteral("message-received")] = QDBusVariant(event->timestamp().toMSecsSinceEpoch() / 1000);
+    header[QStringLiteral("message-token")] = QDBusVariant(id);
+    header[QStringLiteral("message-sent")] = QDBusVariant(timestamp);
+    header[QStringLiteral("message-received")] = QDBusVariant(timestamp);
     header[QStringLiteral("message-type")] = QDBusVariant(Tp::ChannelTextMessageTypeNormal);
-    if (event->senderId() == m_connection->matrix()->user()->id()) {
+    if (senderId == m_connection->matrix()->user()->id()) {
         header[QStringLiteral("message-sender")] = QDBusVariant(m_connection->selfHandle());
         header[QStringLiteral("message-sender-id")] = QDBusVariant(m_connection->selfID());
     } else {
-        header[QStringLiteral("message-sender")] = QDBusVariant(m_connection->ensureContactHandle(event->senderId()));
-        header[QStringLiteral("message-sender-id")] = QDBusVariant(event->senderId());
+        header[QStringLiteral("message-sender")] = QDBusVariant(m_connection->ensureContactHandle(senderId));
+        header[QStringLiteral("message-sender-id")] = QDBusVariant(senderId);
         if (m_targetHandleType == Tp::HandleTypeContact)
             silent = false;
     }
 
     /* Redacted deleted message */
     // https://matrix.org/docs/spec/client_server/r0.4.0.html#id259
-    if (event->isRedacted())
+    if (isRedacted)
         header[QStringLiteral("delivery-status")] = QDBusVariant(Tp::DeliveryStatusDeleted);
 
     /* Read markers */
-    QList<Quotient::User*> usersAtEventId = m_room->usersAtEventId(event->id());
+    QSet<Quotient::User*> usersAtEventId = m_room->usersAtEventId(id);
     const int selfReceipts = usersAtEventId.contains(m_connection->matrix()->user()) ? 1 : 0;
     const bool hasOtherReceipts = usersAtEventId.count() > selfReceipts;
-    if (hasOtherReceipts) {
+    if (hasOtherReceipts)
         header[QStringLiteral("delivery-status")] = QDBusVariant(Tp::DeliveryStatusRead);
-    }
     
-    if (silent) {
+    if (silent)
         header[QStringLiteral("silent")] = QDBusVariant(silent);
-    }
     
     /* Text message */
     Tp::MessagePartList body;
     Tp::MessagePart text;
 
     text[QStringLiteral("content-type")] = QDBusVariant(QStringLiteral("text/plain"));
-    text[QStringLiteral("content")] = QDBusVariant(event->isRedacted() ? event->redactionReason() : event->plainBody());
+    text[QStringLiteral("content")] = QDBusVariant(isRedacted ? redactionReason : plainBody);
     body << text;
 
     Tp::MessagePartList partList;
@@ -294,4 +334,8 @@ void MatrixMessagesChannel::setChatState(uint state, Tp::DBusError *error)
     m_room->markAllMessagesAsRead();
     
     sendChatStateNotification(state);
+}
+
+MatrixMessagesChannel::~MatrixMessagesChannel() {
+    qDebug() << "MatrixMessagesChannel destructor";
 }

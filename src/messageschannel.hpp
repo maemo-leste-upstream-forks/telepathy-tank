@@ -56,11 +56,31 @@ class Connection;
 
 typedef Tp::SharedPtr<MatrixMessagesChannel> MatrixMessagesChannelPtr;
 
+struct RoomMessageEvent {
+  explicit RoomMessageEvent(Quotient::RoomMessageEvent *event) :
+    id(event->id()),
+    senderId(event->senderId()),
+    isRedacted(event->isRedacted()),
+    redactionReason(event->redactionReason()),
+    originalJsonObject(event->originalJsonObject()),
+    plainBody(event->plainBody()),
+    timestamp(event->originTimestamp().toMSecsSinceEpoch() / 1000) {}
+
+  const QString id;
+  const QString senderId;
+  const bool isRedacted;
+  const QString redactionReason;
+  const QJsonObject originalJsonObject;
+  const QString plainBody;
+  double timestamp;
+};
+
 class MatrixMessagesChannel : public Tp::BaseChannelTextType
 {
     Q_OBJECT
 public:
-    static MatrixMessagesChannelPtr create(MatrixConnection *connection, Quotient::Room *room, Tp::BaseChannel *baseChannel);
+    static MatrixMessagesChannelPtr create(MatrixConnection *connection, QString room_alias, Quotient::Room *room, Tp::BaseChannel *baseChannel);
+    ~MatrixMessagesChannel() override;
 
     QString sendMessage(const Tp::MessagePartList &messageParts, uint flags, Tp::DBusError *error);
     // void messageAcknowledged(const QString &messageId);
@@ -68,9 +88,18 @@ public:
 
     void fetchHistory();
     void processMessageEvent(const Quotient::RoomMessageEvent *event);
+    void processMessageEvent(RoomMessageEvent* roomMessageEvent);
+    void processMessageEvent(const QString &id, const QString &senderId, bool isRedacted, const QString &redactionReason, QJsonObject originalJsonObject, const QString &plainBody, double timestamp);
+
+private slots:
+    void onRemoveMembers(const Tp::UIntList& handles, const QString& message, uint reason, Tp::DBusError* error);
+    void onAddMembers(const Tp::UIntList& handles, const QString& message, Tp::DBusError* error);
+
+signals:
+    void channelLeft(Quotient::Room *room);
 
 private:
-    MatrixMessagesChannel(MatrixConnection *connection, Quotient::Room *room, Tp::BaseChannel *baseChannel);
+    MatrixMessagesChannel(MatrixConnection *connection, QString room_alias, Quotient::Room *room, Tp::BaseChannel *baseChannel);
 
     void sendDeliveryReport(Tp::DeliveryStatus tpDeliveryStatus, const QString &deliveryToken);
     void onPendingEventChanged(int pendingEventIndex);
@@ -83,6 +112,7 @@ private:
 
     MatrixConnection *m_connection = nullptr;
     Quotient::Room *m_room = nullptr;
+    QString m_room_alias;
 
     uint m_targetHandle;
     uint m_targetHandleType;

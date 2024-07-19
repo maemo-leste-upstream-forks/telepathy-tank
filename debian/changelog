@@ -1,0 +1,7 @@
+telepathy-tank (0.2.0-1) unstable; urgency=medium
+
+  * Initial import
+  * Support room create/join/leave
+  * Support E2EE 1:1 chats
+
+ -- Sander <code@kroket.io>  Sun, 4 Aug 2024 23:18:53 +0100

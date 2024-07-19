@@ -52,3 +52,19 @@ uint RequestDetails::getTargetHandle(Tp::BaseConnection *connection) const
     }
     return 0;
 }
+
+QString RequestDetails::getInitiatorID(Tp::BaseConnection *connection) const
+{
+    if (contains(TP_QT_IFACE_CHANNEL + QLatin1String(".InitiatorID"))) {
+        return value(TP_QT_IFACE_CHANNEL + QLatin1String(".InitiatorID")).toString();
+    }
+    if (contains(TP_QT_IFACE_CHANNEL + QLatin1String(".InitiatorID"))) {
+        Tp::DBusError error;
+        const uint handle = value(TP_QT_IFACE_CHANNEL + QLatin1String(".InitiatorID")).toUInt();
+        const auto ids = connection->inspectHandles(targetHandleType(), QList<uint>({ handle }), &error);
+        if (!error.isValid() && !ids.isEmpty()) {
+            return ids.first();
+        }
+    }
+    return QString();
+}

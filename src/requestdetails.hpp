@@ -51,6 +51,7 @@ public:
 
     QString getTargetIdentifier(Tp::BaseConnection *connection) const;
     uint getTargetHandle(Tp::BaseConnection *connection) const;
+    QString getInitiatorID(Tp::BaseConnection *connection) const;
 };
 
 #endif // TANK_MATRIX_REQUEST_DETAILS_HPP

@@ -2,6 +2,8 @@
 set(tank_SOURCES
     connection.cpp
     connection.hpp
+    logger.cpp
+    logger.h
     main.cpp
     protocol.cpp
     protocol.hpp
@@ -27,7 +29,12 @@ find_package(Quotient REQUIRED)
 
 target_include_directories(telepathy-tank PRIVATE
     ${TELEPATHY_QT5_INCLUDE_DIR}
+    /usr/include/Quotient/
 )
+
+if(${CMAKE_BUILD_TYPE} STREQUAL Debug)
+    target_compile_definitions(telepathy-tank PRIVATE DEBUG=1)
+endif()
 
 target_link_libraries(telepathy-tank
     Qt5::Core
@@ -42,7 +49,7 @@ configure_file(dbus-service.in org.freedesktop.Telepathy.ConnectionManager.tank.
 
 install(
     TARGETS telepathy-tank
-    DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}
+    DESTINATION /usr/lib/telepathy/
 )
 
 install(

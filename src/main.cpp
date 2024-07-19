@@ -24,12 +24,22 @@
 #include <TelepathyQt/Debug>
 
 #include "protocol.hpp"
+#include "logger.h"
 
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
     app.setOrganizationName(QStringLiteral("TelepathyIM"));
     app.setApplicationName(QLatin1String("telepathy-tank"));
+
+// debug logging
+#ifdef DEBUG
+    QString logPath = "/tmp/tank.log";
+    logFile = new QFile(logPath);
+    if(!logFile->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text))
+        qWarning() << QString("could not open logfile: %1").arg(logPath);
+    qInstallMessageHandler(tankMessageHandler);
+#endif
 
     Tp::registerTypes();
     Tp::enableDebug(true);

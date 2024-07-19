@@ -37,6 +37,10 @@
 #include <connection.h>
 #include <room.h>
 #include <settings.h>
+#include <csapi/joining.h>
+#include <csapi/leaving.h>
+#include <events/simplestateevents.h>
+#include <events/roomcanonicalaliasevent.h>
 #include <user.h>
 
 #define Q_MATRIX_CLIENT_MAJOR_VERSION 0
@@ -162,11 +166,9 @@ MatrixConnection::MatrixConnection(const QDBusConnection &dbusConnection, const 
     m_contactListIface->setRequestSubscriptionCallback(Tp::memFun(this, &MatrixConnection::requestSubscription));
     plugInterface(Tp::AbstractConnectionInterfacePtr::dynamicCast(m_contactListIface));
 
-#if TP_QT_VERSION >= TP_QT_VERSION_CHECK(0, 9, 8)
     /* Connection.Interface.ContactGroups */
-    Tp::BaseConnectionContactGroupsInterfacePtr groupsIface = Tp::BaseConnectionContactGroupsInterface::create();
-    plugInterface(Tp::AbstractConnectionInterfacePtr::dynamicCast(groupsIface));
-#endif
+    Tp::BaseConnectionContactGroupsInterfacePtr contactGroupsIface = Tp::BaseConnectionContactGroupsInterface::create();
+    plugInterface(Tp::AbstractConnectionInterfacePtr::dynamicCast(contactGroupsIface));
 
     /* Connection.Interface.Requests */
     m_requestsIface = Tp::BaseConnectionRequestsInterface::create(this);
@@ -204,6 +206,11 @@ void MatrixConnection::doConnect(Tp::DBusError *error)
     setStatus(Tp::ConnectionStatusConnecting, Tp::ConnectionStatusReasonRequested);
 
     m_connection = new Quotient::Connection(QUrl(m_server));
+
+    // requires -DQuotient_ENABLE_E2EE=ON for libquotient
+    m_connection->enableEncryption(true);
+    m_connection->enableDirectChatEncryption(true);
+
     connect(m_connection, &Quotient::Connection::connected, this, &MatrixConnection::onConnected);
     connect(m_connection, &Quotient::Connection::syncDone, this, &MatrixConnection::onSyncDone);
     connect(m_connection, &Quotient::Connection::loginError, [](const QString &error) {
@@ -217,12 +224,13 @@ void MatrixConnection::doConnect(Tp::DBusError *error)
     });
     connect(m_connection, &Quotient::Connection::newRoom, this, &MatrixConnection::processNewRoom);
 
-    if (loadSessionData()) {
-        qDebug() << Q_FUNC_INFO << "connectWithToken" << m_user << m_accessToken << m_deviceId;
-        m_connection->connectWithToken(m_userId, QString::fromLatin1(m_accessToken), m_deviceId);
-    } else {
-        m_connection->connectToServer(m_user, m_password, m_deviceId);
-    }
+    // disable loading session for now, `connectWithToken` has issues
+    // if (loadSessionData()) {
+    //     qDebug() << Q_FUNC_INFO << "connectWithToken" << m_user << m_accessToken << m_deviceId;
+    //     m_connection->loginWithToken(QString::fromLatin1(m_accessToken), m_deviceId);
+    // } else {
+    m_connection->loginWithPassword(m_user, m_password, m_deviceId);
+    // }
 }
 
 void MatrixConnection::doDisconnect()
@@ -291,65 +299,232 @@ Tp::UIntList MatrixConnection::requestHandles(uint handleType, const QStringList
     return result;
 }
 
+Quotient::JoinRoomJob* MatrixConnection::joinRoomSync(QString alias)
+{
+    qDebug() << "joinRoomSync" << alias;
+    auto *job = m_connection->joinRoom(alias, {});  // @TODO: support serverList
+    QEventLoop loop;
+    connect(job, &Quotient::JoinRoomJob::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    qDebug() << "joinRoomSync code" << job->status().code << "msg" << job->status().message;
+    return job;
+}
+
+Quotient::LeaveRoomJob* MatrixConnection::leaveRoomSync(Quotient::Room *room)
+{
+    qDebug() << "leaveRoomSync" << room->id();
+    Quotient::LeaveRoomJob *job = room->leaveRoom();
+    QEventLoop loop;
+    connect(job, &Quotient::LeaveRoomJob::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    qDebug() << "leaveRoomSync code" << job->status().code << "msg" << job->status().message;
+    return job;
+}
+
+Quotient::CreateRoomJob* MatrixConnection::createRoomSync(QString alias)
+{
+    Quotient::Connection::RoomVisibility visibility = Quotient::Connection::RoomVisibility::PublishRoom;
+    QString topic = "";
+    QStringList invites = {};
+
+    // ':' is not permitted in the room alias name.
+    // This expects a local part - 'test', not '#test:utwente.io'
+    if(alias.contains(":")) {
+        alias = alias.split(":").at(0);
+    }
+
+    qDebug() << "createRoomSync" << alias;
+    auto *job = m_connection->createRoom(visibility, alias, alias.replace("#", ""), topic, invites);
+    QEventLoop loop;
+    connect(job, &Quotient::CreateRoomJob::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    qDebug() << "createRoomSync code" << job->status().code << "msg" << job->status().message;
+    return job;
+}
+
+Tp::BaseChannelPtr MatrixConnection::bogusChannel(Tp::BaseChannelPtr baseChannel, Tp::DBusError *error, QString err_msg) 
+{
+    error->set(TP_QT_ERROR_INVALID_ARGUMENT, err_msg);
+    qWarning() << err_msg;
+    return baseChannel;
+}
+
 Tp::BaseChannelPtr MatrixConnection::createChannelCB(const QVariantMap &request, Tp::DBusError *error)
 {
+    // TargetID (remote_uid) can be of the following 2 formats:
+    // 1. Matrix Room Alias #test:utwente.io
+    // 2. Matrix Room ID !tRtcUJTDuqHvuIxdyd:utwente.io
+    //
+    // Telepathy clients should prefer Room ID, except, of course, for the first
+    // join where an user provided a room by alias - as Room ID is mostly an
+    // underlying matrix protocol concept.
+    //
+    // Room name is eventually derived from the Quotient::Room* object (via canonicalName())
+    // which is handled by the messageschannel, in the constructor (Tp::BaseChannelRoomInterface).
+    //
+    // During the join/create flow, we return a bogus channel, as after Quotient::Room* creation
+    // it wont have its full state yet. By listening to Quotient::Room* events we will 
+    // trigger this function a second time when it is ready (MatrixConnection::onAboutToAddNewMessages())
+
     const RequestDetails details = request;
 
-    if (details.channelType() == TP_QT_IFACE_CHANNEL_TYPE_ROOM_LIST) {
+    if (details.channelType() == TP_QT_IFACE_CHANNEL_TYPE_ROOM_LIST)
         return createRoomListChannel();
-    }
 
-    if (details.channelType() != TP_QT_IFACE_CHANNEL_TYPE_TEXT) {
-        error->set(TP_QT_ERROR_INVALID_ARGUMENT, QStringLiteral("Unsupported channel type"));
-        return Tp::BaseChannelPtr();
-    }
     const Tp::HandleType targetHandleType = details.targetHandleType();
     const uint targetHandle = details.getTargetHandle(this);
-    const QString targetID = details.getTargetIdentifier(this);
+    QString targetID = details.getTargetIdentifier(this);
+    const QString init = details.getInitiatorID(this);
+
+    qDebug() << "============= createChannelCB";
+    qDebug() << "targetID" << targetID;
+    // qDebug() << "targetHandle" << targetHandle;
+    // qDebug() << "targetHandleType is_contact" << (targetHandleType == Tp::HandleTypeContact);
+    qDebug() << "targetHandleType is_room" << (targetHandleType == Tp::HandleTypeRoom);
+    // qDebug() << "initiatorID" << init;
+
+    Tp::BaseChannelPtr baseChannel = Tp::BaseChannel::create(this, details.channelType(), targetHandleType, targetHandle);
+    baseChannel->setRequested(details.isRequested());
 
     switch (targetHandleType) {
     case Tp::HandleTypeContact:
     case Tp::HandleTypeRoom:
         break;
     case Tp::HandleTypeNone:
-        error->set(TP_QT_ERROR_INVALID_ARGUMENT, QStringLiteral("Target handle type is not present in the request details"));
-        return Tp::BaseChannelPtr();
+        return bogusChannel(baseChannel, error, "Target handle type is not present in the request details");
     default:
-        error->set(TP_QT_ERROR_INVALID_ARGUMENT, QStringLiteral("Unknown target handle type"));
-        return Tp::BaseChannelPtr();
+        return bogusChannel(baseChannel, error, "Unknown target handle type");
     }
 
-    if (targetID.isEmpty()) {
-        error->set(TP_QT_ERROR_INVALID_HANDLE, QStringLiteral("Unknown target identifier"));
-        return Tp::BaseChannelPtr();
-    }
+    if (targetID.isEmpty())
+        return bogusChannel(baseChannel, error, "Unknown target identifier");
 
+    // Quotient::Room *Leaves the chat room.
     Quotient::Room *targetRoom = nullptr;
+    QString room_id = targetID;
+    QString room_name = "";
+    QString err_msg = "";
+    if(targetID.startsWith("#") || targetID.startsWith("@"))
+        room_name = targetID;
+
     if (targetHandleType == Tp::HandleTypeContact) {
         DirectContact contact = getDirectContact(targetHandle);
-        if (!contact.isValid()) {
-            error->set(TP_QT_ERROR_NOT_IMPLEMENTED, QStringLiteral("Requested single chat does not exist yet "
-                                                                   "(and DirectChat creation is not supported yet"));
-            return Tp::BaseChannelPtr();
-        }
+        if (!contact.isValid())
+            return bogusChannel(baseChannel, error, "Requested single chat does not exist yet (and DirectChat creation is not supported yet)");
+
         targetRoom = contact.room;
     } else {
         targetRoom = getRoom(targetHandle);
-    }
 
-    Tp::BaseChannelPtr baseChannel = Tp::BaseChannel::create(this, details.channelType(), targetHandleType, targetHandle);
-    baseChannel->setTargetID(targetID);
-    baseChannel->setRequested(details.isRequested());
+        // 1. try joining a room if we are not aware of it yet
+        // 2. try creating a room if joining did not work
+        //
+        // Note: when leaving a channel, and we were the last participant, the room
+        // will get permanently deleted server-side, and there is no way to rejoin or
+        // recreate, regardless of using Room Alias or Room ID.
+        if(!targetRoom) {
+            qDebug() << "join/create flow";
+            auto *joinJob = this->joinRoomSync(targetID);
+            auto join_status_code = joinJob->status().code;
 
-    if (details.channelType() == TP_QT_IFACE_CHANNEL_TYPE_TEXT) {
-        qDebug() << Q_FUNC_INFO << "creating channel for the room:" << targetRoom;
-        if (targetRoom) {
-            MatrixMessagesChannelPtr messagesChannel = MatrixMessagesChannel::create(this, targetRoom, baseChannel.data());
-            baseChannel->plugInterface(Tp::AbstractChannelInterfacePtr::dynamicCast(messagesChannel));
+            if(join_status_code == 0) {
+                room_id = joinJob->roomId();
+            } else if(join_status_code == 101) {  // e.g "Failed to make_join via any server"
+                joinJob->deleteLater();
+                return bogusChannel(baseChannel, error, QString("join: Room does not exist anymore (%1) message (%2)").arg(targetID, joinJob->status().message));
+            } else if(join_status_code == 105) { // Room not found, and possibly open for creation
+                if(joinJob->status().message.contains("No known servers")) {
+                    joinJob->deleteLater();
+                    return bogusChannel(baseChannel, error, QString("join: Room alias has previously already been registered and cannot be re-used (%1) message (%2)").arg(targetID, joinJob->status().message));
+                }
+
+                auto *createJob = this->createRoomSync(targetID);
+                if(createJob->status().code == 0) {
+                    qDebug() << QString("channel %1 created").arg(targetID);
+                    room_id = createJob->roomId();
+                } else {
+                    joinJob->deleteLater();
+                    createJob->deleteLater();
+                    return bogusChannel(baseChannel, error, QString("error createRoomJob, returning baseChannel"));
+                }
+            } else {
+                joinJob->deleteLater();
+                return bogusChannel(baseChannel, error, QString("join: unknown error for (%1) message %2, returning baseChannel").arg(targetID, joinJob->status().message));
+            }
+
+            if(!m_roomIds.contains(room_id)) {
+                joinJob->deleteLater();
+                return bogusChannel(baseChannel, error, "underlying Quotient::Room* not found");
+            }
+
+            qDebug() << "JoinRoom / createRoom success, returning bogus connection";
+            return baseChannel;
         }
     }
 
+    if (details.channelType() != TP_QT_IFACE_CHANNEL_TYPE_TEXT)
+        return bogusChannel(baseChannel, error, "channelType was not TP_QT_IFACE_CHANNEL_TYPE_TEXT");
+
+    if (!targetRoom)
+        return bogusChannel(baseChannel, error, "targetRoom was nullptr");
+
+    if(targetID.startsWith("!"))
+        baseChannel->setTargetID(targetID);
+    else if(room_id.startsWith("!"))
+        baseChannel->setTargetID(room_id);
+
+    if(room_name.isEmpty()) {
+        room_name = targetRoom->canonicalAlias();
+        if(room_name.isEmpty()) {
+            return bogusChannel(baseChannel, error, "impossible situation, debug me");
+        }
+    }
+
+    MatrixMessagesChannelPtr messagesChannel = MatrixMessagesChannel::create(this, room_name, targetRoom, baseChannel.data());
+    baseChannel->plugInterface(Tp::AbstractChannelInterfacePtr::dynamicCast(messagesChannel));
+    connect(messagesChannel.data(), &MatrixMessagesChannel::destroyed, this, &MatrixConnection::onTextChannelClosed);
+
+    connect(messagesChannel.data(), &MatrixMessagesChannel::channelLeft, [=]{
+        this->onChannelLeft(targetRoom);
+        baseChannel->close();
+
+        // @TODO: on channel leave, `messagesChannel` stays alive - destructor not called. 
+        // For now, lets assume Tp handles ownership.
+    });
+
+    // baseChannel closed slot
+    connect(baseChannel.data(), &Tp::BaseChannel::closed, [this, targetRoom, messagesChannel, baseChannel] {
+        qDebug() << "Tp::BaseChannel::closed";
+    });
+
     return baseChannel;
+}
+
+void MatrixConnection::onTextChannelClosed()
+{
+    qDebug() << Q_FUNC_INFO;
+    // @TODO: how2delete?
+    // MatrixMessagesChannel *channel = static_cast<MatrixMessagesChannel*>(sender());
+}
+
+bool MatrixConnection::requestLeave(Quotient::Room *room)
+{
+    auto *job = this->leaveRoomSync(room);
+    return job->status().code == 0;
+}
+
+void MatrixConnection::onChannelLeft(Quotient::Room *room)
+{
+    qDebug() << "leaving channel" << room->id();
+    if(!this->requestLeave(room)) {
+        qWarning() << "request leave failed";
+    } else {
+        qDebug() << "removing from m_roomIds";
+        m_roomIds.removeAll(room->id());
+    }
 }
 
 Tp::BaseChannelPtr MatrixConnection::createRoomListChannel()
@@ -368,7 +543,8 @@ Tp::ContactAttributesMap MatrixConnection::getContactAttributes(const Tp::UIntLi
                                                                 const QStringList &interfaces,
                                                                 Tp::DBusError *error)
 {
-    qDebug() << Q_FUNC_INFO << handles << interfaces;
+    // qDebug() << "getContactAttributes()";
+    // qDebug() << Q_FUNC_INFO << handles << interfaces;
     Tp::ContactAttributesMap contactAttributes;
 
     for (auto handle : handles) {
@@ -407,13 +583,14 @@ Tp::ContactAttributesMap MatrixConnection::getContactAttributes(const Tp::UIntLi
         }
         // Attributes are taken by reference, no need to assign
     }
-    qDebug() << contactAttributes;
-    qDebug() << contactAttributes.count();
+    // qDebug() << contactAttributes;
+    // qDebug() << contactAttributes.count();
     return contactAttributes;
 }
 
 void MatrixConnection::requestSubscription(const Tp::UIntList &handles, const QString &message, Tp::DBusError *error)
 {
+    qDebug() << "requestSubscription()";
 }
 
 Tp::AliasMap MatrixConnection::getAliases(const Tp::UIntList &contacts, Tp::DBusError *error)
@@ -428,6 +605,7 @@ Tp::AliasMap MatrixConnection::getAliases(const Tp::UIntList &contacts, Tp::DBus
 
 QString MatrixConnection::getContactAlias(uint handle) const
 {
+    qDebug() << "getContactAlias()";
     const Quotient::User *user = getUser(handle);
     if (!user) {
         return QString();
@@ -456,21 +634,115 @@ uint MatrixConnection::setPresence(const QString &status, const QString &message
     return selfHandle();
 }
 
+// 1. handle 1:1 room join - create a channel
+// 2. handle room leave from external clients, close the channel
+void MatrixConnection::handleMatrixMemberEvent(Quotient::Room* room, QJsonObject blob)
+{
+    qDebug() << "handleMatrixMemberEvent()";
+
+    MatrixMessagesChannelPtr textChannel;
+    auto obj_content = blob["content"].toObject();
+    auto obj_sender = blob["sender"].toString();
+    if(!obj_content.contains("membership"))
+        return;
+
+    auto membership = obj_content["membership"].toString();
+    if(membership == "join" && obj_sender != selfID() && room->isDirectChat()) {  // 1:1 room, create channel
+        textChannel = getMatrixMessagesChannelPtr(room);
+        return;
+    }
+
+    // detect if we left a room
+    if(membership != "leave" || obj_sender != selfID())
+        return;
+
+    uint handleType = room->isDirectChat() ? Tp::HandleTypeContact : Tp::HandleTypeRoom;
+    uint handle = room->isDirectChat() ? getDirectContactHandle(room) : getRoomHandle(room);
+    if (!handle) {
+        qWarning() << Q_FUNC_INFO << "Unknown room" << room->id();
+        return;
+    }
+
+    // get existing channel, close
+    Tp::DBusError error;
+    Tp::BaseChannelPtr channel = getExistingChannel(
+        QVariantMap({
+            { TP_QT_IFACE_CHANNEL + QLatin1String(".TargetHandleType"), handleType },
+            { TP_QT_IFACE_CHANNEL + QLatin1String(".TargetHandle"), handle },
+            { TP_QT_IFACE_CHANNEL + QLatin1String(".ChannelType"), TP_QT_IFACE_CHANNEL_TYPE_TEXT },
+        }), &error);
+
+    if (error.isValid()) {
+        qWarning() << "getExistingChannel failed:" << error.name() << " " << error.message();
+        return;
+    }
+
+    textChannel = MatrixMessagesChannelPtr::dynamicCast(channel->interface(TP_QT_IFACE_CHANNEL_TYPE_TEXT));
+    channel->close();  // @TODO: but what about `m_groupIface->setRemoveMembersCallback();` ?
+    return;
+}
+
+// Quotient::Room event handler, e.g: channel creation, messages, name events
+//
+// responsible for the creation of a Telepathy channel (createChannelCB())
+// when the Quotient::Room is "ready". Upon creation of a new Quotient::Room*
+// instance, it may not have all of its state yet, this includes the canonical
+// room alias, and we wait for it before channel creation. in addition, we cache
+// incoming messages while the room is not in a ready state yet, as messages
+// may come in before we have a room alias.
 void MatrixConnection::onAboutToAddNewMessages(Quotient::RoomEventsRange events)
 {
+    MatrixMessagesChannelPtr textChannel;
+    Quotient::RoomMessageEvent *message;
+
+    auto _sender = sender();
+    Quotient::Room *room = qobject_cast<Quotient::Room *>(_sender);
+    if(!room) {
+        qWarning() << "room was nullptr";
+        return;
+    }
+
     for (auto &event : events) {
-        Quotient::RoomMessageEvent *message = dynamic_cast<Quotient::RoomMessageEvent *>(event.get());
-        if (message) {
-            Quotient::Room *room = qobject_cast<Quotient::Room *>(sender());
-            if (!room) {
+        Quotient::RoomEvent* _event = event.get();
+        QString event_type = event->originalJsonObject()["type"].toString();
+        qDebug() << "event_type" << event_type;
+
+        // detect room leave from external clients
+        if(event_type == "m.room.member") {
+            // qDebug() << event->originalJsonObject();
+            handleMatrixMemberEvent(room, event->originalJsonObject());
+            continue;
+        }
+
+        // skip messages when there is no canonicalAlias yet
+        // except for 1:1 chats, which do not have a canonicalAlias
+        if(!room->isDirectChat()) {
+            if(room->canonicalAlias().isEmpty() && event_type == "m.room.message") {
+                message = dynamic_cast<Quotient::RoomMessageEvent *>(_event);
+                m_messageQueue[room->id()] << new RoomMessageEvent(message);
+                continue;
+            } else if(room->canonicalAlias().isEmpty()) {
                 continue;
             }
-            MatrixMessagesChannelPtr textChannel = getMatrixMessagesChannelPtr(room);
-            if (!textChannel) {
-                qDebug() << Q_FUNC_INFO << "Error, channel is not a TextChannel?";
+        }
+
+        if(QStringList({"m.room.member", "m.room.canonical_alias", "m.room.message"}).contains(event_type)) {
+            textChannel = getMatrixMessagesChannelPtr(room);  // createChannelCb()
+            if (!textChannel)
                 continue;
+
+            // any cached messages?
+            if(m_messageQueue.contains(room->id())) {
+                for(RoomMessageEvent* cachedMessageEvent: m_messageQueue[room->id()])
+                    textChannel->processMessageEvent(cachedMessageEvent);
+                m_messageQueue.clear();
             }
-            textChannel->processMessageEvent(message);
+
+            // handle incoming message
+            if(event_type == "m.room.message") {
+                Quotient::RoomMessageEvent *message = dynamic_cast<Quotient::RoomMessageEvent *>(_event);
+                textChannel->processMessageEvent(message);
+            }
         }
     }
 }
@@ -497,10 +769,19 @@ void MatrixConnection::onConnected()
 void MatrixConnection::onSyncDone()
 {
     qDebug() << Q_FUNC_INFO;
-    const auto rooms = m_connection->rooms(Quotient::JoinState::Join); // TODO: any state
-    for (Quotient::Room *room : rooms) {
+
+    // any to join?
+    for (Quotient::Room *room : m_connection->rooms(Quotient::JoinState::Join)) {
         processNewRoom(room);
     }
+
+    // any invites?
+    for (Quotient::Room *room : m_connection->rooms(Quotient::JoinState::Invite)) {
+        qDebug() << "invited to a room, auto-joining";
+        processNewRoom(room);
+        this->joinRoomSync(room->id());
+    }
+
     m_contactListIface->setContactListState(Tp::ContactListStateSuccess);
 }
 
@@ -579,42 +860,49 @@ bool MatrixConnection::saveSessionData() const
 
 void MatrixConnection::processNewRoom(Quotient::Room *room)
 {
-    qDebug() << Q_FUNC_INFO << room;
-    qDebug() << room->displayName() << room->topic();
-    qDebug() << room->memberNames();
     if (room->isDirectChat()) {
-        // Single user room
+        // Single user room (1:1)
         for (Quotient::User *user : room->users()) {
             if (user == room->localUser()) {
                 continue;
             }
+
             ensureDirectContact(user, room);
+            getMatrixMessagesChannelPtr(room);
         }
     } else {
+        // group room
         ensureHandle(room);
     }
+
     connect(room, &Quotient::Room::aboutToAddNewMessages,
             this, &MatrixConnection::onAboutToAddNewMessages,
             Qt::UniqueConnection);
+
+    // name state comes later
+    connect(room, &Quotient::Room::namesChanged, this, &MatrixConnection::onRoomNameChanged, Qt::UniqueConnection);
+}
+
+void MatrixConnection::onRoomNameChanged(Quotient::Room *room)
+{
+    qDebug() << QString("room alias for %1 is now %2").arg(room->id(), room->canonicalAlias());
 }
 
 uint MatrixConnection::ensureDirectContact(Quotient::User *user, Quotient::Room *room)
 {
-    qDebug() << Q_FUNC_INFO << user->id() << user->displayname();
     const uint handle = ensureHandle(user);
     m_directContacts.insert(handle, DirectContact(user, room));
+    qDebug() << "ensureDirectContact" << user->id() << "room" << room->id() << "directContact handle" << handle;
     return handle;
 }
-
 
 MatrixMessagesChannelPtr MatrixConnection::getMatrixMessagesChannelPtr(Quotient::Room *room)
 {
     MatrixMessagesChannelPtr textChannel;
     uint handleType = room->isDirectChat() ? Tp::HandleTypeContact : Tp::HandleTypeRoom;
     uint handle = room->isDirectChat() ? getDirectContactHandle(room) : getRoomHandle(room);
-
     if (!handle) {
-        qWarning() << Q_FUNC_INFO << "Unknown room" << room->id();
+        qWarning() << "Unknown room" << room->id();
         return textChannel;
     }
 
@@ -627,7 +915,6 @@ MatrixMessagesChannelPtr MatrixConnection::getMatrixMessagesChannelPtr(Quotient:
                                 { TP_QT_IFACE_CHANNEL + QLatin1String(".ChannelType"), TP_QT_IFACE_CHANNEL_TYPE_TEXT },
                             }),
                 yoursChannel, /* suppress handle */ false, &error);
-
     if (error.isValid()) {
         qWarning() << "ensureChannel failed:" << error.name() << " " << error.message();
         return textChannel;
@@ -639,12 +926,10 @@ MatrixMessagesChannelPtr MatrixConnection::getMatrixMessagesChannelPtr(Quotient:
 
 void MatrixConnection::prefetchHistory(Quotient::Room *room)
 {
-    if (room->messageEvents().begin() == room->messageEvents().end()) {
+    if (room->messageEvents().begin() == room->messageEvents().end())
         return;
-    }
 
     MatrixMessagesChannelPtr textChannel = getMatrixMessagesChannelPtr(room);
-
     if (!textChannel) {
         qDebug() << "Error, channel is not a TextChannel?";
         return;
@@ -724,7 +1009,26 @@ uint MatrixConnection::ensureHandle(Quotient::Room *room)
     if (index != 0) {
         return index;
     }
+
     m_roomIds.append(room->id());
+    qDebug() << "ensureHandle()";
+    qDebug() << "id()" << room->id();
+    qDebug() << "name()" << room->name();
+    qDebug() << "canonicalAlias()" << room->canonicalAlias();
+    qDebug() << "members size" << room->memberNames().size();
+
+    auto state = room->joinState();
+    if(state == Quotient::JoinState::Join) {
+        qDebug() << "state: Quotient::JoinState::Join";
+    } else if(state == Quotient::JoinState::Leave) {
+        qDebug() << "state: Quotient::JoinState::Leave";
+    } else if(state == Quotient::JoinState::Invite) {
+        qDebug() << "state: Quotient::JoinState::Invite";
+    } else if(state == Quotient::JoinState::Knock) {
+        qDebug() << "state: Quotient::JoinState::Knock";
+    }
+
+    qDebug() << "appending to m_roomIds" << room->id();
     return m_roomIds.count();
 }
 
@@ -767,7 +1071,9 @@ void MatrixConnection::requestAvatarsImpl(const Tp::UIntList &handles)
         if (!user) {
             continue;
         }
-        connect(user, &Quotient::User::avatarChanged, this, &MatrixConnection::onUserAvatarChanged);
-        onUserAvatarChanged(user);
+
+        // @TODO: disable the avatar stuff, for now
+        //connect(user, &Quotient::User::avatarChanged, this, &MatrixConnection::onUserAvatarChanged);
+        //onUserAvatarChanged(user);
     }
 }
