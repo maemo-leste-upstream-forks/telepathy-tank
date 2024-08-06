@@ -9,6 +9,7 @@ Build-Depends: debhelper-compat (= 10),
                qtbase5-dev,
                cmake,
                libqt5svg5-dev,
+               qt5keychain-dev,
                qtmultimedia5-dev,
                libqt5x11extras5-dev,
 Standards-Version: 4.5.1
