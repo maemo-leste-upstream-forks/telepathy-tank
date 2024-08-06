@@ -1,3 +1,9 @@
+telepathy-tank (0.2.3) unstable; urgency=medium
+
+  * debian/control: add libssl, libtelepathy-qt5
+
+ -- Sander <code@kroket.io>  Sun, 7 Aug 2024 00:14:53 +0100
+
 telepathy-tank (0.2.2) unstable; urgency=medium
 
   * debian/control: add qt5keychain-dev

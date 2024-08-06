@@ -7,6 +7,7 @@ Build-Depends: debhelper-compat (= 10),
                libquotient-dev,
                libtelepathy-qt5-dev,
                qtbase5-dev,
+               libssl-dev,
                cmake,
                libqt5svg5-dev,
                qt5keychain-dev,
@@ -20,7 +21,9 @@ Homepage: http://telepathy.freedesktop.org/
 Package: telepathy-tank
 Architecture: any
 Depends: ${shlibs:Depends},
-         ${misc:Depends}
+         ${misc:Depends},
+         libssl1.1,
+         libtelepathy-qt5-0
 Provides: telepathy-connection-manager
 Description: Matrix connection manager for the Telepathy framework
  telepathy-tank is a Matrix connection manager for the Telepathy framework
