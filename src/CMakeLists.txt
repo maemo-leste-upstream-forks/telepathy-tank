@@ -49,7 +49,7 @@ configure_file(dbus-service.in org.freedesktop.Telepathy.ConnectionManager.tank.
 
 install(
     TARGETS telepathy-tank
-    DESTINATION /usr/lib/telepathy/
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/telepathy/
 )
 
 install(
