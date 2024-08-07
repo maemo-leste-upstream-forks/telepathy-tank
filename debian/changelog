@@ -1,3 +1,9 @@
+telepathy-tank (0.2.8) unstable; urgency=medium
+
+  * connection.cpp: `error` passed to getExistingChannel() caused a segfault, tp-qt bug?
+
+ -- Sander <code@kroket.io>  Sun, 7 Aug 2024 15:14:53 +0100
+
 telepathy-tank (0.2.7) unstable; urgency=medium
 
   * check return type of channel->interface()
