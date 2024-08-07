@@ -15,7 +15,7 @@ find_package(TelepathyQt5 0.9.6 REQUIRED)
 find_package(TelepathyQt5Service 0.9.6 REQUIRED)
 
 # Use the follow line to specify the path to Quotient
-set(Quotient_DIR "/usr/lib/x86_64-linux-gnu/cmake/Quotient/")
+#set(Quotient_DIR "/usr/lib/x86_64-linux-gnu/cmake/Quotient/")
 find_package(Quotient 0.6 REQUIRED)
 
 find_package(Qt5 REQUIRED COMPONENTS Core Gui DBus Xml Network Multimedia)
