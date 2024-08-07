@@ -665,6 +665,7 @@ void MatrixConnection::handleMatrixMemberEvent(Quotient::Room* room, QJsonObject
 
     // get existing channel, close
     Tp::DBusError error;
+    qDebug() << "get getExistingChannel for removal";
     Tp::BaseChannelPtr channel = getExistingChannel(
         QVariantMap({
             { TP_QT_IFACE_CHANNEL + QLatin1String(".TargetHandleType"), handleType },
@@ -677,9 +678,19 @@ void MatrixConnection::handleMatrixMemberEvent(Quotient::Room* room, QJsonObject
         return;
     }
 
-    textChannel = MatrixMessagesChannelPtr::dynamicCast(channel->interface(TP_QT_IFACE_CHANNEL_TYPE_TEXT));
-    channel->close();  // @TODO: but what about `m_groupIface->setRemoveMembersCallback();` ?
-    return;
+    auto _channel = channel->interface(TP_QT_IFACE_CHANNEL_TYPE_TEXT);
+    if(!_channel) {
+        qDebug() << "could not close non-existent channel";
+        return;
+    }
+
+    textChannel = MatrixMessagesChannelPtr::dynamicCast(_channel);
+    if(textChannel && channel) {
+        qDebug() << "closing channel";
+        channel->close();  // @TODO: what about `m_groupIface->setRemoveMembersCallback();` ?
+    } else {
+        qWarning() << "cannot call channel->close() when either textChannel or channel is nullptr";
+    }
 }
 
 // Quotient::Room event handler, e.g: channel creation, messages, name events
