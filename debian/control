@@ -22,7 +22,7 @@ Package: telepathy-tank
 Architecture: any
 Depends: ${shlibs:Depends},
          ${misc:Depends},
-         libssl1.1,
+         libssl3,
          libtelepathy-qt5-0
 Provides: telepathy-connection-manager
 Description: Matrix connection manager for the Telepathy framework
